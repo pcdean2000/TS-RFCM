@@ -68,8 +68,8 @@ class MetricsCalculator:
             FPRs.append(FP / N)
 
         # 加上 (0,0) 和 (1,1) 點
-        TPRs = [0] + TPRs + [1]
-        FPRs = [0] + FPRs + [1]
+        TPRs = [1] + TPRs + [0]
+        FPRs = [1] + FPRs + [0]
 
         roc_auc = auc(FPRs, TPRs)
         return FPRs, TPRs, roc_auc
