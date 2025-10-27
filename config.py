@@ -16,7 +16,6 @@ RESULTS_DIR = OUTPUT_DIR / "results" # 存放 CSV 和圖片
 
 # --- 時間序列參數 ---
 INTERVAL = 30
-TIMESERIES_START = datetime.fromisoformat("2021-04-04T13:00:00")
 TIMESERIES_MINUTES = 15
 TIMESERIES_DIR_PREFIX = f"interval_{INTERVAL}_src_feature"
 TIMESERIES_DIR = OUTPUT_DIR / TIMESERIES_DIR_PREFIX
@@ -37,11 +36,6 @@ ZEEK_CSVS = {
     # "weird": ZEEK_CSV_DIR / "weird.csv",
     "filtered_conn": ZEEK_CSV_DIR / "filtered_conn.csv",
 }
-
-# --- 特徵工程 (Feature Engineering) ---
-# 原始腳本中硬編碼的檔案，這裡也列出
-# 理想情況下，這應該是動態處理 NETFLOW_DIR 中的所有檔案
-PROCESSING_NETFLOW_FILE = NETFLOW_DIR / "20210404_test.csv"
 
 # --- 重組 (Reformatting) ---
 FEATURES = [
@@ -97,7 +91,7 @@ MODEL_PARAMS = {
 MODEL_OUTPUT_PATHS = {
     "kkmeans": OUTPUT_DIR / f"timeseries/{TIMESERIES_DIR_PREFIX}/tslearn_kmeans.npy",
     "ksom": OUTPUT_DIR / f"timeseries/{TIMESERIES_DIR_PREFIX}/ksom_label.npy",
-    "rfcm": TIMESERIES_FEATURE_DIR, # RFCM 比較特殊，儲存
+    "rfcm": TIMESERIES_FEATURE_DIR, # RFCM 比較特殊
     "rfcm_merged": TIMESERIES_FEATURE_DIR / "rfcm_results.csv",
     "rfcm_sorted": TIMESERIES_FEATURE_DIR / "sorted_rfcm_results.csv",
     "rfcm_types": TIMESERIES_FEATURE_DIR / "types.json"

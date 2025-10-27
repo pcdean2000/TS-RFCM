@@ -1,17 +1,19 @@
 import numpy as np
 import pandas as pd
 import os
+import glob
 from .base_stage import BaseStage
 from utils.helpers import ensure_dir_exists
 
 class FeatureEngineeringStage(BaseStage):
     """
     執行特徵工程：
-    1. 讀取過濾後的 Netflow (目前硬編碼為 config.PROCESSING_NETFLOW_FILE)
-    2. 按來源 IP 分組
-    3. 將流量特徵分攤到每一秒
-    4. 計算新特徵
-    5. 儲存每個 IP 的 Parquet 檔案
+    1. 讀取所有過濾後的 Netflow (*_filtered.csv)
+    2. 找出全域最早時間點，並存入 context
+    3. 按來源 IP 分組
+    4. 將流量特徵分攤到每一秒
+    5. 計算新特徵
+    6. 儲存每個 IP 的 Parquet 檔案
     """
     
     def __init__(self, config):
@@ -21,20 +23,47 @@ class FeatureEngineeringStage(BaseStage):
     def execute(self, context: dict) -> dict:
         print("Executing Feature Engineering Stage...")
         
-        # 原始腳本只處理一個特定檔案，我們遵循該邏輯
-        # 理想情況下，這應該處理所有 `_filtered.csv` 檔案
-        netflow_file = str(self.config.PROCESSING_NETFLOW_FILE).replace(".csv", "_filtered.csv")
+        # 讀取所有 _filtered.csv 檔案
+        file_list = glob.glob(str(self.config.NETFLOW_DIR / '*_filtered.csv'))
         
-        if not os.path.exists(netflow_file):
-            print(f"  Error: Filtered netflow file not found: {netflow_file}")
+        if not file_list:
+            print(f"  Error: No '*_filtered.csv' files found in {self.config.NETFLOW_DIR}")
             print("  Please ensure preprocessing ran correctly.")
             return context
 
-        print(f"  Processing file: {netflow_file}")
-        netflow_filtered = pd.read_csv(netflow_file)
-        netflow_filtered[["ts", "te"]] = netflow_filtered[["ts", "te"]].astype(dtype='datetime64[ns]')
+        print(f"  Found {len(file_list)} filtered netflow files.")
+        
+        all_netflow_dfs = []
+        for netflow_file in file_list:
+            print(f"  Loading file: {netflow_file}")
+            try:
+                df = pd.read_csv(netflow_file, low_memory=False)
+                all_netflow_dfs.append(df)
+            except Exception as e:
+                print(f"    Warning: Could not read {netflow_file}: {e}")
+        
+        if not all_netflow_dfs:
+            print("  Error: No data loaded from netflow files.")
+            return context
 
-        grouped = netflow_filtered.groupby('sa')
+        # 合併所有 DataFrames
+        netflow_combined = pd.concat(all_netflow_dfs, ignore_index=True)
+        print(f"  Combined all files. Total rows: {len(netflow_combined)}")
+
+        # 轉換時間欄位
+        netflow_combined[["ts", "te"]] = netflow_combined[["ts", "te"]].astype(dtype='datetime64[ns]')
+
+        # 找出全域最早時間點並存入 context
+        global_min_ts = netflow_combined["ts"].min()
+        if pd.isna(global_min_ts):
+             print("  Error: Could not determine minimum timestamp (ts column is all NaT).")
+             return context
+             
+        context['timeseries_start'] = global_min_ts
+        print(f"  Global minimum timestamp found: {global_min_ts}")
+
+        # [MODIFIED] Groupby 作用於合併後的 DataFrame
+        grouped = netflow_combined.groupby('sa')
 
         for key, df in grouped:
             print(f"  Processing IP: {key}", " " * 50, end="\r")
@@ -71,7 +100,7 @@ class FeatureEngineeringStage(BaseStage):
             try:
                 # 確保 td 是有效的數值
                 duration = int(float(row.td)) + 1
-            except ValueError:
+            except (ValueError, TypeError):
                 continue # 跳過無效 td 的行
                 
             for t in [row.ts + pd.Timedelta(seconds=s) for s in range(duration)]:

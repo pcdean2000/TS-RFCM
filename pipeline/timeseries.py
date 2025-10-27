@@ -9,20 +9,31 @@ class TimeSeriesGenerationStage(BaseStage):
     """
     執行時間序列生成：
     1. 讀取每個 IP 的 Parquet 特徵檔案
-    2. 按 config.INTERVAL (例如 30s) 進行時間分桶和彙總
-    3. 儲存每個 IP 的時間序列 Parquet 檔案
+    2. 從 context 獲取動態的 start_time
+    3. 根據 config.INTERVAL 和 config.TIMESERIES_MINUTES 進行時間分桶和彙總
+    4. 儲存每個 IP 的時間序列 Parquet 檔案
     """
     
     def __init__(self, config):
         self.config = config
         self.interval = timedelta(seconds=self.config.INTERVAL)
-        self.start_time = self.config.TIMESERIES_START
-        self.end_time = self.start_time + timedelta(minutes=self.config.TIMESERIES_MINUTES)
         print("Initializing Time Series Generation Stage...")
 
     def execute(self, context: dict) -> dict:
         print("Executing Time Series Generation Stage...")
+
+        # 從 context 獲取動態 start_time
+        start_time = context.get('timeseries_start')
+        if start_time is None:
+            raise ValueError("TimeSeriesGenerationStage: 'timeseries_start' not found in context. Did FeatureEngineeringStage fail?")
         
+        # 確保 start_time 是 pandas Timestamp
+        self.start_time = pd.to_datetime(start_time)
+        # [MODIFIED] 使用 TIMESERIES_MINUTES 計算 end_time
+        self.end_time = self.start_time + timedelta(minutes=self.config.TIMESERIES_MINUTES)
+        
+        print(f"  Time window set: {self.start_time} to {self.end_time}")
+
         source_files = glob(str(self.config.FEATURE_DIR / '*.parquet'))
         if not source_files:
             print(f"  Warning: No feature files found in {self.config.FEATURE_DIR}.")
@@ -45,12 +56,13 @@ class TimeSeriesGenerationStage(BaseStage):
                     continue
                 df[["timeStart"]] = df[["timeStart"]].astype(dtype='datetime64[ns]')
                 
+                # _aggregate_to_interval 會使用 self.start_time 和 self.end_time
                 result_df = self._aggregate_to_interval(df)
                 
                 ensure_dir_exists(targetFile)
                 result_df.to_parquet(targetFile, index=False)
             except Exception as e:
-                print(f"    Error processing {filename}: {e}")
+                print(f"\n    Error processing {filename}: {e}")
 
         print("\nTime Series Generation Stage Complete.")
         context['timeseries_generation_complete'] = True

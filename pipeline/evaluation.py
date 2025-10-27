@@ -8,6 +8,7 @@ from .base_stage import BaseStage
 from evaluation.ground_truth import GroundTruthGenerator
 from evaluation.metrics import MetricsCalculator
 from evaluation.plotting import ROCPlotter
+from itertools import combinations
 
 class EvaluationStage(BaseStage):
     """
