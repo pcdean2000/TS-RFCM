@@ -1,6 +1,6 @@
 # TS-RFCM: A Robust Unsupervised Pipeline for Network Anomaly Detection using Time Series Clustering
 
-(https://img.shields.io/badge/License-MIT-yellow.svg)(https://opensource.org/licenses/MIT)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## Overview
 
