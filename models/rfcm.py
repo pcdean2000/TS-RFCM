@@ -1,7 +1,6 @@
 import time
 from multiprocessing import Pool, Process
 import multiprocessing
-from turtle import distance
 
 import numpy as np
 import sklearn.base as skb
@@ -198,13 +197,29 @@ class RFCM(skb.ClassifierMixin, skb.BaseEstimator):
         if sample_weight is not None:
             sample_weight = skv._check_sample_weight(sample_weight, data)
 
+        # 執行核心演算法
         U, center = self._noise_resistant_rfcm(
             data, self.n_clusters, self.epsilon, self.expo, self.alpha, self.max_iter, self.p)
 
         self.cluster_centers_ = center
         self._n_cluster_out = self.cluster_centers_.shape[0]
+        
+        # 取得每個點的 Label
         self.labels_ = np.argmax(U, axis=0)
 
+        # 實作論文邏輯：計算每個點到其 Assigned Center 的距離
+        # 為了計算 D(o)，我們需要每個樣本 i 到其中心 c_i 的距離
+        # 這裡我們再次呼叫 calc_dtw，雖然有一點計算成本，但這是最乾淨的寫法
+        print("  RFCM: Calculating final distances for D(o)...")
+        
+        # dist_matrix shape: (n_clusters, n_samples)
+        dist_matrix = self.calc_dtw(data, center)
+        
+        # 取出每個樣本對應其 label 的距離
+        # labels_ 是一個長度為 n_samples 的陣列，值為 0..c-1
+        n_samples = data.shape[0]
+        self.distances_ = dist_matrix[self.labels_, np.arange(n_samples)]
+        
         return self
 
     def predict(self, X):

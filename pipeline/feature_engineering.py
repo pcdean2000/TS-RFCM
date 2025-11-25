@@ -3,39 +3,29 @@ import pandas as pd
 import os
 import glob
 from .base_stage import BaseStage
-from utils.helpers import ensure_dir_exists
+from utils.helpers import ensure_dir_exists, get_ip_network
 
 class FeatureEngineeringStage(BaseStage):
     """
-    執行特徵工程：
-    1. 讀取所有過濾後的 Netflow (*_filtered.csv)
-    2. 找出全域最早時間點，並存入 context
-    3. 按來源 IP 分組
-    4. 將流量特徵分攤到每一秒
-    5. 計算新特徵
-    6. 儲存每個 IP 的 Parquet 檔案
+    支援 EAC 多粒度特徵工程：
+    對每個設定的 Netmask (32, 24, 16, 8) 執行特徵聚合。
     """
     
     def __init__(self, config):
         self.config = config
-        print("Initializing Feature Engineering Stage...")
+        print("Initializing Feature Engineering Stage (EAC Enabled)...")
 
     def execute(self, context: dict) -> dict:
         print("Executing Feature Engineering Stage...")
         
-        # 讀取所有 _filtered.csv 檔案
         file_list = glob.glob(str(self.config.NETFLOW_DIR / '*_filtered.csv'))
-        
         if not file_list:
-            print(f"  Error: No '*_filtered.csv' files found in {self.config.NETFLOW_DIR}")
-            print("  Please ensure preprocessing ran correctly.")
+            print(f"  Error: No '*_filtered.csv' files found.")
             return context
 
-        print(f"  Found {len(file_list)} filtered netflow files.")
-        
+        # 1. 讀取並合併資料
         all_netflow_dfs = []
         for netflow_file in file_list:
-            print(f"  Loading file: {netflow_file}")
             try:
                 df = pd.read_csv(netflow_file, low_memory=False)
                 all_netflow_dfs.append(df)
@@ -43,48 +33,60 @@ class FeatureEngineeringStage(BaseStage):
                 print(f"    Warning: Could not read {netflow_file}: {e}")
         
         if not all_netflow_dfs:
-            print("  Error: No data loaded from netflow files.")
             return context
 
-        # 合併所有 DataFrames
         netflow_combined = pd.concat(all_netflow_dfs, ignore_index=True)
-        print(f"  Combined all files. Total rows: {len(netflow_combined)}")
-
-        # 轉換時間欄位
         netflow_combined[["ts", "te"]] = netflow_combined[["ts", "te"]].astype(dtype='datetime64[ns]')
 
-        # 找出全域最早時間點並存入 context
         global_min_ts = netflow_combined["ts"].min()
-        if pd.isna(global_min_ts):
-             print("  Error: Could not determine minimum timestamp (ts column is all NaT).")
-             return context
-             
         context['timeseries_start'] = global_min_ts
-        print(f"  Global minimum timestamp found: {global_min_ts}")
+        print(f"  Global minimum timestamp: {global_min_ts}")
 
-        # [MODIFIED] Groupby 作用於合併後的 DataFrame
-        grouped = netflow_combined.groupby('sa')
+        # 2. 針對每個 Mask 執行聚合
+        for mask in self.config.EAC_MASKS:
+            print(f"\n  --- Processing Netmask /{mask} ---")
+            
+            # 定義該 mask 的輸出目錄
+            mask_feature_dir = self.config.FEATURE_DIR_BASE / f"mask_{mask}"
+            
+            # 計算 Group Key (單一 IP 或 Subnet)
+            if mask == 32:
+                netflow_combined['group_key'] = netflow_combined['sa']
+            else:
+                # 使用 helper 轉換
+                netflow_combined['group_key'] = netflow_combined['sa'].apply(lambda x: get_ip_network(x, mask))
 
-        for key, df in grouped:
-            print(f"  Processing IP: {key}", " " * 50, end="\r")
-            if ":" in key:  # 忽略 IPv6
-                continue
+            # 移除無效 IP (轉換失敗的)
+            valid_df = netflow_combined.dropna(subset=['group_key'])
             
-            targetFile = self.config.FEATURE_DIR / f"{key}.parquet"
-            if os.path.isfile(targetFile):
-                continue
+            grouped = valid_df.groupby('group_key')
+            count = 0
             
-            temp_data = self._process_ip_group(df)
-            temp_df = pd.DataFrame(temp_data)
-            
-            if temp_df.empty:
-                continue
+            for key, df in grouped:
+                if ":" in str(key): # 暫時忽略 IPv6
+                    continue
                 
-            feature_df = self._calculate_features(temp_df)
+                # 檔名要轉義斜線，例如 192.168.1.0/24 -> 192.168.1.0_24.parquet
+                safe_key = str(key).replace('/', '_')
+                targetFile = mask_feature_dir / f"{safe_key}.parquet"
+                
+                if os.path.isfile(targetFile):
+                    continue
+                
+                temp_data = self._process_ip_group(df)
+                temp_df = pd.DataFrame(temp_data)
+                
+                if temp_df.empty:
+                    continue
+                    
+                feature_df = self._calculate_features(temp_df)
+                
+                ensure_dir_exists(targetFile)
+                feature_df.to_parquet(targetFile, index=False)
+                count += 1
             
-            ensure_dir_exists(targetFile)
-            feature_df.to_parquet(targetFile, index=False)
-            
+            print(f"  Finished Mask /{mask}: Generated {count} feature files.")
+
         print("\nFeature Engineering Stage Complete.")
         context['feature_engineering_complete'] = True
         return context
@@ -98,14 +100,13 @@ class FeatureEngineeringStage(BaseStage):
         }
         for row in df.itertuples():
             try:
-                # 確保 td 是有效的數值
                 duration = int(float(row.td)) + 1
             except (ValueError, TypeError):
-                continue # 跳過無效 td 的行
+                continue
                 
             for t in [row.ts + pd.Timedelta(seconds=s) for s in range(duration)]:
                 temp["ts"].append(t)
-                temp["sa"].append(row.sa)
+                temp["sa"].append(row.group_key) # 使用 group_key
                 temp["ipkt"].append(row.ipkt / duration)
                 temp["ibyt"].append(row.ibyt / duration)
                 temp["opkt"].append(row.opkt / duration)
@@ -120,18 +121,12 @@ class FeatureEngineeringStage(BaseStage):
         """ 從分攤的數據計算最終特徵 """
         feature = pd.DataFrame()
         feature["timeStart"] = temp_df["ts"]
-        feature["srcIP"] = temp_df["sa"]
+        feature["srcIP"] = temp_df["sa"] # 這裡實際上存的是 IP 或 Subnet
         feature["packets"] = temp_df["ipkt"] + temp_df["opkt"]
         feature["bytes"] = temp_df["ibyt"] + temp_df["obyt"]
-        
-        # 處理除以零的情況
         feature["bytes/packets"] = (feature["bytes"] / feature["packets"]).fillna(0)
         feature["flows"] = temp_df["flows"]
-        
-        feature["flows/(bytes/packets)"] = (feature["flows"] / feature["bytes/packets"])
-        # 處理 inf (當 bytes/packets 為 0 時)
-        feature["flows/(bytes/packets)"] = feature["flows/(bytes/packets)"].replace([np.inf, -np.inf], 0).fillna(0)
-
+        feature["flows/(bytes/packets)"] = (feature["flows"] / feature["bytes/packets"]).replace([np.inf, -np.inf], 0).fillna(0)
         feature["nDstIP"] = temp_df["nda"]
         feature["nSrcPort"] = temp_df["nsp"]
         feature["nDstPort"] = temp_df["ndp"]

@@ -17,19 +17,29 @@ class KernelSOMClusterer(BaseClusterer):
         # MiniSom 不是在 __init__ 時傳入所有參數
         
     def load_data(self, config):
-        print("  KSOM: Loading data...")
-        pyts_dataset = np.load(config.PYTS_DATASET_FILE)
-        pyts_dataset = dropna(pyts_dataset)
-        print(f"\tPyts dataset shape: {pyts_dataset.shape}")
+        print("  KSOM: Loading data (Host Level /32)...")
         
-        # KSOM (MiniSom) 需要 2D 數據 (n_samples, n_features)
-        self.data = pyts_dataset.reshape(len(pyts_dataset), -1)
-        print(f"\tX shape: {self.data.shape}")
+        # 使用新的動態路徑方法
+        try:
+            dataset_path = self.get_dataset_path(config, mask=32)
+            # KSOM 一般不需要 sample list，除非存檔需要，這裡僅載入數據
+            
+            pyts_dataset = np.load(dataset_path)
+            pyts_dataset = dropna(pyts_dataset)
+            print(f"\tPyts dataset shape: {pyts_dataset.shape}")
+            
+            # KSOM (MiniSom) 需要 2D 數據 (n_samples, n_features)
+            self.data = pyts_dataset.reshape(len(pyts_dataset), -1)
+            print(f"\tX shape: {self.data.shape}")
+            
+        except FileNotFoundError as e:
+            print(f"  Error loading KSOM data: {e}")
+            raise
 
     def fit_predict(self):
         print("  KSOM: Fitting model...")
         input_len = self.data.shape[1]
-        
+
         # 在這裡實例化 MiniSom
         self.model = MiniSom(
             self.som_shape[0], 
@@ -51,7 +61,7 @@ class KernelSOMClusterer(BaseClusterer):
         target_file = config.MODEL_OUTPUT_PATHS["ksom"]
         ensure_dir_exists(target_file)
         np.save(target_file, self.labels)
-        print(f"\tKernel SOM shape: {self.labels.shape}")
+        print(f"\tSaved labels to {target_file}")
 
     def post_process(self, config):
         # 評估階段 (EvaluationStage) 會處理標籤重排序

@@ -1,4 +1,6 @@
 from abc import ABC, abstractmethod
+import os
+from pathlib import Path
 
 class BaseClusterer(ABC):
     """
@@ -38,6 +40,34 @@ class BaseClusterer(ABC):
     @abstractmethod
     def post_process(self, config):
         """
-        (可選) 執行任何模型特定的後處理，例如合併 (RFCM) 或排序。
+        執行任何模型特定的後處理，例如合併 (RFCM) 或排序。
         """
         pass
+
+    def get_dataset_path(self, config, mask=32) -> Path:
+        """
+        統一獲取特徵資料路徑的方法。
+        未來的模型可以直接呼叫此方法，不用硬編碼路徑。
+        
+        :param config: 設定檔物件
+        :param mask: 資料粒度 (預設為 32，即 Host Level)
+        :return: 指向 pyts_dataset.npy 的 Path 物件
+        """
+        ts_dir_prefix = config.TIMESERIES_DIR_PREFIX
+        # 路徑結構: output/timeseries_feature/{prefix}/mask_{mask}/pyts_dataset.npy
+        base_dir = config.TIMESERIES_FEATURE_DIR_BASE / ts_dir_prefix / f"mask_{mask}"
+        target_file = base_dir / "pyts_dataset.npy"
+        
+        if not target_file.exists():
+            raise FileNotFoundError(
+                f"Dataset not found for mask /{mask} at {target_file}. "
+                "Please check if ReformattingStage generated it correctly."
+            )
+            
+        return target_file
+
+    def get_sample_path(self, config, mask=32) -> Path:
+        """ 獲取對應的 IP 列表檔案 """
+        ts_dir_prefix = config.TIMESERIES_DIR_PREFIX
+        base_dir = config.TIMESERIES_FEATURE_DIR_BASE / ts_dir_prefix / f"mask_{mask}"
+        return base_dir / "sample.txt"
